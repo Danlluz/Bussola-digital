@@ -16,11 +16,11 @@ ARQUIVO_CACHE = "banco_de_dados_local.csv"
 
 # Funções de Utilidade para o PDF
 def limpar_texto_pdf(texto):
-    """Remove caracteres que o FPDF padrão não suporta"""
+    """Remove caracteres não suportados pelo FPDF padrão"""
     return texto.encode('latin-1', 'replace').decode('latin-1')
 
 def gerar_pdf(conteudo):
-    """Cria um arquivo PDF simples com o resultado da IA"""
+    """Gera um PDF com o resultado da análise"""
     pdf = FPDF()
     pdf.add_page()
     pdf.set_font("Arial", 'B', 16)
@@ -35,32 +35,35 @@ def gerar_pdf(conteudo):
 # 1. CONFIGURAÇÕES E CHAVES (SECRETS)
 # ==========================================
 try:
-    # Chaves das APIs
     CHAVE_GEMINI = st.secrets["gemini"]["api_key"]
     CHAVE_YOUTUBE = st.secrets["youtube"]["api_key"]
-    # Credenciais OAuth (Aba 2)
     CLIENT_ID = st.secrets["google"]["client_id"]
     REDIRECT_URI = st.secrets["google"]["redirect_uri"]
     
     genai.configure(api_key=CHAVE_GEMINI)
 except Exception as e:
-    st.error(f"⚠️ Erro nas Secrets: {e}. Verifique as configurações no Streamlit Cloud.")
+    st.error(f"⚠️ Erro nas Secrets: {e}")
     st.stop()
+
 # ==========================================
-# 2. MOTOR DE MINERAÇÃO (JSON)
+# 2. MOTOR DE MINERAÇÃO (COM LIMITE E LIMPEZA)
 # ==========================================
 def minerar_json_youtube(arquivo_json):
     dados_brutos = json.load(arquivo_json)
+    
+    # Filtra e limita a 1500 vídeos para garantir performance e cota de API
+    videos = [v for v in dados_brutos if "titleUrl" in v]
+    videos = videos[:1500] 
+    
     lista_final = []
+    total = len(videos)
     barra_progresso = st.progress(0)
     status_texto = st.empty()
-    
-    videos = [v for v in dados_brutos if "titleUrl" in v]
-    total = len(videos)
     
     for i, video in enumerate(videos):
         video_id = video["titleUrl"].split("v=")[-1]
         url_api = f"https://www.googleapis.com/youtube/v3/videos?part=snippet&id={video_id}&key={CHAVE_YOUTUBE}"
+        
         try:
             res = requests.get(url_api).json()
             if "items" in res and len(res["items"]) > 0:
@@ -73,8 +76,14 @@ def minerar_json_youtube(arquivo_json):
         except:
             continue
         
-        barra_progresso.progress((i + 1) / total)
+        # Atualização visual
+        progresso = (i + 1) / total
+        barra_progresso.progress(progresso)
         status_texto.text(f"Processando vídeo {i+1} de {total}...")
+
+    # LIMPEZA FINAL DA INTERFACE (Evita travamento visual)
+    barra_progresso.empty()
+    status_texto.empty()
     
     df = pd.DataFrame(lista_final)
     if not df.empty:
@@ -111,7 +120,7 @@ with aba_simulador:
         interesses = st.multiselect("Áreas de interesse:", ["Python", "Design", "Finanças", "Marketing"], default=["Python"])
         if st.button("Gerar Prévia"):
             model = genai.GenerativeModel('gemini-1.5-flash')
-            previa = model.generate_content(f"Diga uma profissão para quem gosta de {interesses}")
+            previa = model.generate_content(f"Diga uma profissão inovadora para quem gosta de {interesses}")
             st.write(previa.text)
 
 # --- ABA 2: RAIO-X RÁPIDO ---
@@ -120,11 +129,10 @@ with aba_rapida:
     auth_url = f"https://accounts.google.com/o/oauth2/v2/auth?client_id={CLIENT_ID}&redirect_uri={REDIRECT_URI}&response_type=code&scope=https://www.googleapis.com/auth/youtube.readonly"
     st.markdown(f'<a href="{auth_url}" target="_self"><button style="background-color: #FF4B4B; color: white; border: none; padding: 10px 20px; border-radius: 5px; cursor: pointer;">🔐 Conectar com YouTube</button></a>', unsafe_allow_html=True)
 
-# --- ABA 3: DOSSIÊ PREMIUM (DASHBOARD) ---
+# --- ABA 3: DOSSIÊ PREMIUM ---
 with aba_profunda:
     st.markdown("### 💎 Análise de Histórico Profundo")
 
-    # Gerenciamento de Cache
     if "dados_minerados" not in st.session_state:
         if os.path.exists(ARQUIVO_CACHE):
             st.session_state.dados_minerados = pd.read_csv(ARQUIVO_CACHE)
@@ -143,6 +151,8 @@ with aba_profunda:
                 st.rerun()
     else:
         df = st.session_state.dados_minerados
+        
+        # Gráficos Visuais
         col_g1, col_g2 = st.columns(2)
         with col_g1:
             st.markdown("##### 🏆 Canais Mais Assistidos")
@@ -157,18 +167,18 @@ with aba_profunda:
             fig_pie = px.pie(values=fatia.values, names=fatia.index, hole=0.4, template="plotly_dark")
             st.plotly_chart(fig_pie, use_container_width=True)
 
-        if st.button("♻️ Resetar Dados"):
+        if st.button("♻️ Resetar Dados e Cache"):
             if os.path.exists(ARQUIVO_CACHE): os.remove(ARQUIVO_CACHE)
             del st.session_state.dados_minerados
             st.rerun()
 
         st.divider()
-        contexto = st.text_area("🔧 Personalize sua análise (Seu objetivo):")
+        contexto = st.text_area("🔧 Personalize sua análise (Qual seu objetivo?):")
         
         if st.button("🚀 Gerar Dossiê IA", type="primary", use_container_width=True):
             resumo = df['Canal'].value_counts().head(30).to_string()
             prompt = f"Analise este perfil do YouTube: {resumo}. Objetivo: {contexto}. Gere Arquétipo, 3 Carreiras e Trilha de 90 dias."
-            with st.spinner("IA Analisando..."):
+            with st.spinner("IA Analisando dados..."):
                 model = genai.GenerativeModel('gemini-1.5-flash')
                 resposta = model.generate_content(prompt)
                 st.session_state.analise_pronta = resposta.text
@@ -179,6 +189,6 @@ with aba_profunda:
                 st.markdown(st.session_state.analise_pronta)
                 try:
                     pdf_bytes = gerar_pdf(st.session_state.analise_pronta)
-                    st.download_button("📥 Baixar PDF", data=pdf_bytes, file_name="dossie.pdf", mime="application/pdf", use_container_width=True)
-                except Exception as e:
-                    st.warning("⚠️ O PDF não pôde ser gerado (caracteres especiais).")
+                    st.download_button("📥 Baixar Dossiê (PDF)", data=pdf_bytes, file_name="dossie_carreira.pdf", mime="application/pdf", use_container_width=True)
+                except:
+                    st.warning("⚠️ Erro ao gerar PDF (caracteres especiais).")
